@@ -30,7 +30,7 @@ func main() {
 		c.Writer.Header().Set("Access-Control-Max-Age", "86400")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 
-		if c.Request.Method == "OPTIONS" {
+		if c.Request.Method == http.MethodOptions {
 			c.Writer.WriteHeader(200)
 			return
 		}
