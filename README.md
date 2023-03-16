@@ -3,8 +3,7 @@ golang cors 反向代理，使得web端可以跨域访问任何链接
 
 运行服务端：
 ```shell
-go run main.go  #运行
-go build  #构建
+ $env:GOOS="linux" ; $env:GOARCH="amd64" ; go build -o reverse_proxy  main.go
 ```
 
 flutter dio web 客户端示例：

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"io"
 	"log"
@@ -16,7 +17,7 @@ func main() {
 
 	httpClient := &http.Client{
 		//Transport: tr,
-		Timeout: time.Second * 30, //超时时间
+		Timeout: time.Minute * 5, //超时时间
 	}
 
 	r := gin.Default()
@@ -36,6 +37,8 @@ func main() {
 		}
 		urlString := c.Query("url")
 
+		uri, _ := url.Parse(urlString)
+
 		originUrl, err := parseOriginUrl(urlString)
 
 		if err != nil {
@@ -45,6 +48,9 @@ func main() {
 
 		req, _ := http.NewRequest(c.Request.Method, urlString, c.Request.Body)
 		copyRequestHeader(c, req)
+		if req.Header.Get("Authorization") == "" && uri.Host == "api.openai.com" {
+			req.Header.Set("Authorization", fmt.Sprint("Bearer ", apiKey))
+		}
 
 		resp, err := httpClient.Do(req)
 		if err != nil {
@@ -56,6 +62,7 @@ func main() {
 		modifyLocation(c, originUrl.String())
 		io.Copy(c.Writer, resp.Body)
 	})
+	fmt.Println("运行在 9999 端口")
 	err := r.Run(":9999")
 	if err != nil {
 		log.Fatalln(err)
