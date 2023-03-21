@@ -3,17 +3,35 @@ package main
 import (
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"github.com/wilinz/go-filex"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
 
 var proxyPath = "/proxy"
 
+var (
+	apiKey = ""
+)
+
 func main() {
+
+	appDir := filex.NewFile(os.Args[0]).ParentFile()
+	apikeyFile := filex.NewFile2(appDir, "openaikey.txt")
+	if !apikeyFile.IsExist() {
+		log.Panic("请在把apikey放在程序目录下的openaikey.txt")
+	}
+	var err error
+	apiKey, err = apikeyFile.ReadAllString()
+	apiKey = strings.Trim(apiKey, "\r\n ")
+	if err == nil {
+		log.Println("apikey配置成功")
+	}
 
 	httpClient := &http.Client{
 		//Transport: tr,
@@ -54,7 +72,8 @@ func main() {
 
 		resp, err := httpClient.Do(req)
 		if err != nil {
-			c.String(http.StatusInternalServerError, "代理服务器异常")
+			log.Println(err)
+			c.String(http.StatusInternalServerError, err.Error())
 			return
 		}
 
@@ -63,9 +82,9 @@ func main() {
 		io.Copy(c.Writer, resp.Body)
 	})
 	fmt.Println("运行在 9999 端口")
-	err := r.Run(":9999")
-	if err != nil {
-		log.Fatalln(err)
+	err1 := r.Run(":9999")
+	if err1 != nil {
+		log.Fatalln(err1)
 		return
 	}
 }
