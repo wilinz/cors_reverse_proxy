@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/wilinz/go-filex"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -16,22 +18,40 @@ import (
 var proxyPath = "/proxy"
 
 var (
-	apiKey = ""
+	config Config
 )
+
+type Config struct {
+	Tls       bool   `json:"tls"`
+	Cert      string `json:"cert"`
+	Key       string `json:"key"`
+	Port      int    `json:"port"`
+	OpenaiKey string `json:"openai_key"`
+	AuthKey   string `json:"auth_key"`
+}
 
 func main() {
 
 	appDir := filex.NewFile(os.Args[0]).ParentFile()
-	apikeyFile := filex.NewFile2(appDir, "openaikey.txt")
-	if !apikeyFile.IsExist() {
-		log.Panic("请在把apikey放在程序目录下的openaikey.txt")
+	configFile := filex.NewFile2(appDir, "config.json")
+	if !configFile.IsExist() {
+		temp := filex.NewFile2(appDir, "config.temp.json")
+		f, _ := temp.Create()
+		byteArr, _ := json.MarshalIndent(Config{
+			Tls:       false,
+			Cert:      "",
+			Key:       "",
+			Port:      10010,
+			OpenaiKey: "",
+			AuthKey:   "",
+		}, "", "    ")
+		f.Write(byteArr)
+		f.Close()
+		log.Panic("请配置放在程序目录下的 config.json")
 	}
-	var err error
-	apiKey, err = apikeyFile.ReadAllString()
-	apiKey = strings.Trim(apiKey, "\r\n ")
-	if err == nil {
-		log.Println("apikey配置成功")
-	}
+	f, _ := configFile.Open()
+	b, _ := ioutil.ReadAll(f)
+	json.Unmarshal(b, &config)
 
 	httpClient := &http.Client{
 		//Transport: tr,
@@ -53,6 +73,13 @@ func main() {
 			c.Writer.WriteHeader(200)
 			return
 		}
+
+		authKey := c.Query("key")
+		if authKey != config.AuthKey {
+			c.String(http.StatusUnauthorized, "未认证，请更新App")
+			return
+		}
+
 		urlString := c.Query("url")
 
 		uri, _ := url.Parse(urlString)
@@ -67,7 +94,7 @@ func main() {
 		req, _ := http.NewRequest(c.Request.Method, urlString, c.Request.Body)
 		copyRequestHeader(c, req)
 		if req.Header.Get("Authorization") == "" && uri.Host == "api.openai.com" {
-			req.Header.Set("Authorization", fmt.Sprint("Bearer ", apiKey))
+			req.Header.Set("Authorization", fmt.Sprint("Bearer ", config.OpenaiKey))
 		}
 
 		resp, err := httpClient.Do(req)
@@ -79,14 +106,26 @@ func main() {
 
 		copyResponseHeader(c, resp)
 		modifyLocation(c, originUrl.String())
-		io.Copy(c.Writer, resp.Body)
+		buf := make([]byte, 128)
+		io.CopyBuffer(c.Writer, resp.Body, buf)
 	})
-	fmt.Println("运行在 9999 端口")
-	err1 := r.Run(":9999")
-	if err1 != nil {
-		log.Fatalln(err1)
-		return
+
+	addr := fmt.Sprintf(":%d", config.Port)
+	fmt.Printf("运行在 %d 端口\n", config.Port)
+	if config.Tls {
+		err := r.RunTLS(addr, config.Cert, config.Key)
+		if err != nil {
+			log.Fatalln(err)
+			return
+		}
+	} else {
+		err1 := r.Run(addr)
+		if err1 != nil {
+			log.Fatalln(err1)
+			return
+		}
 	}
+
 }
 
 func parseOriginUrl(urlString string) (*url.URL, error) {
