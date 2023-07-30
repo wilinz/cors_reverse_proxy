@@ -93,7 +93,7 @@ func main() {
 
 		req, _ := http.NewRequest(c.Request.Method, urlString, c.Request.Body)
 		copyRequestHeader(c, req)
-		if req.Header.Get("Authorization") == "" && uri.Host == "api.openai.com" {
+		if uri.Host == "api.openai.com" {
 			req.Header.Set("Authorization", fmt.Sprint("Bearer ", config.OpenaiKey))
 		}
 
