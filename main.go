@@ -74,6 +74,10 @@ func main() {
 			return
 		}
 
+		c.Writer.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, post-check=0, pre-check=0")
+		c.Writer.Header().Set("Pragma", "no-cache")
+		c.Writer.Header().Set("Expires", "0")
+
 		authKey := c.Query("key")
 		if authKey != config.AuthKey {
 			c.String(http.StatusUnauthorized, "未认证，请更新App")
