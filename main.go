@@ -23,31 +23,36 @@ var (
 
 type Config struct {
 	Tls       bool   `json:"tls"`
-	Cert      string `json:"cert"`
-	Key       string `json:"key"`
-	Port      int    `json:"port"`
-	OpenaiKey string `json:"openai_key"`
-	AuthKey   string `json:"auth_key"`
+	TLSCert   string `json:"tls_cert"`
+	TLSKey    string `json:"tls_key"`
+	Listening string `json:"listening"`
+	Token     string `json:"token"`
 }
 
 func main() {
 
-	appDir := filex.NewFile(os.Args[0]).ParentFile()
-	configFile := filex.NewFile2(appDir, "config.json")
+	appDir, err := os.Getwd()
+	if err != nil {
+		fmt.Println("Error getting current directory:", err)
+		return
+	}
+	fmt.Println("Current working directory:", appDir)
+
+	configFile := filex.NewFile1(appDir, "config.json5")
 	if !configFile.IsExist() {
-		temp := filex.NewFile2(appDir, "config.temp.json")
+		temp := filex.NewFile1(appDir, "config.temp.json5")
 		f, _ := temp.Create()
 		byteArr, _ := json.MarshalIndent(Config{
 			Tls:       false,
-			Cert:      "",
-			Key:       "",
-			Port:      10010,
-			OpenaiKey: "",
-			AuthKey:   "",
+			TLSCert:   "",
+			TLSKey:    "",
+			Listening: "0.0.0.0:10010",
+			Token:     "",
 		}, "", "    ")
 		f.Write(byteArr)
+		print(f.Name())
 		f.Close()
-		log.Panic("请配置放在程序目录下的 config.json")
+		log.Panic("请配置放在程序目录下的 config.json5")
 	}
 	f, _ := configFile.Open()
 	b, _ := ioutil.ReadAll(f)
@@ -65,7 +70,7 @@ func main() {
 
 		c.Writer.Header().Set("Access-Control-Allow-Origin", c.Request.Header.Get("Origin"))
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "X-Referer, X-User-Agent")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, tun-*, Content-Type")
 		c.Writer.Header().Set("Access-Control-Max-Age", "86400")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 
@@ -78,15 +83,13 @@ func main() {
 		c.Writer.Header().Set("Pragma", "no-cache")
 		c.Writer.Header().Set("Expires", "0")
 
-		authKey := c.Query("key")
-		if authKey != config.AuthKey {
-			c.String(http.StatusUnauthorized, "未认证，请更新App")
+		authHeader := c.GetHeader("authorization")
+		if !validBearer(authHeader, config.Token) {
+			c.String(http.StatusUnauthorized, "未认证，请更新App: bearer 认证失败")
 			return
 		}
 
 		urlString := c.Query("url")
-
-		uri, _ := url.Parse(urlString)
 
 		originUrl, err := parseOriginUrl(urlString)
 
@@ -97,9 +100,6 @@ func main() {
 
 		req, _ := http.NewRequest(c.Request.Method, urlString, c.Request.Body)
 		copyRequestHeader(c, req)
-		if uri.Host == "api.openai.com" {
-			req.Header.Set("Authorization", fmt.Sprint("Bearer ", config.OpenaiKey))
-		}
 
 		resp, err := httpClient.Do(req)
 		if err != nil {
@@ -114,10 +114,10 @@ func main() {
 		io.CopyBuffer(c.Writer, resp.Body, buf)
 	})
 
-	addr := fmt.Sprintf(":%d", config.Port)
-	fmt.Printf("运行在 %d 端口\n", config.Port)
+	addr := fmt.Sprintf("%s", config.Listening)
+	fmt.Printf("运行在 %s \n", config.Listening)
 	if config.Tls {
-		err := r.RunTLS(addr, config.Cert, config.Key)
+		err := r.RunTLS(addr, config.TLSCert, config.TLSKey)
 		if err != nil {
 			log.Fatalln(err)
 			return
@@ -140,40 +140,52 @@ func parseOriginUrl(urlString string) (*url.URL, error) {
 }
 
 func modifyLocation(c *gin.Context, origin string) {
-	location := c.Writer.Header().Get("Location")
-	if isAbsolutePath(location) {
-		location = buildProxyUrl(origin + location)
-	} else if isFullURL(location) {
-		location = buildProxyUrl(location)
+	rawLocation := strings.TrimSpace(c.Writer.Header().Get("Location"))
+	if rawLocation == "" {
+		return
 	}
-	c.Writer.Header().Set("Location", location)
+
+	originURL, _ := url.Parse(origin)
+	location := rawLocation
+
+	switch {
+	case strings.HasPrefix(location, "//"): // protocol-relative URL
+		if originURL != nil && originURL.Scheme != "" {
+			location = fmt.Sprintf("%s:%s", originURL.Scheme, location)
+		}
+	case isFullURL(location):
+	case isAbsolutePath(location):
+		location = origin + location
+	default: // relative path like "foo/bar"
+		location = origin + "/" + strings.TrimPrefix(location, "/")
+	}
+
+	locationProxy := buildProxyUrl(location)
+	// 将上游 Location 重命名为 tun-Location 返回给前端
+	c.Writer.Header().Del("Location")
+	c.Writer.Header().Set("tun-Location", location)
+	c.Writer.Header().Set("tun-Location-Proxy", locationProxy)
 }
 
 func copyResponseHeader(c *gin.Context, resp *http.Response) {
-	cookies := resp.Cookies()
-	for _, cookie := range cookies {
-		cookie.SameSite = http.SameSiteNoneMode
-		cookie.Secure = true
-		c.Writer.Header().Add("Set-Cookie", cookie.String())
-	}
-	c.Writer.WriteHeader(resp.StatusCode)
 	for k, vList := range resp.Header {
-		if k != "Set-Cookie" {
-			for _, v := range vList {
-				c.Writer.Header().Add(k, v)
-			}
+		headerKey := k
+		if strings.EqualFold(k, "set-cookie") {
+			headerKey = "tun-set-cookie"
+		}
+		for _, v := range vList {
+			c.Writer.Header().Add(headerKey, v)
 		}
 	}
+	c.Writer.WriteHeader(resp.StatusCode)
 }
 
 func copyRequestHeader(c *gin.Context, req *http.Request) {
 	for k, vList := range c.Request.Header {
-		newKey := k
-		if strings.HasPrefix(k, "X-") {
-			newKey = k[len("X-"):]
-			c.Request.Header.Del(newKey)
-			req.Header.Del(newKey)
+		if len(k) <= len("tun-") || !strings.EqualFold(k[:len("tun-")], "tun-") {
+			continue
 		}
+		newKey := k[len("tun-"):]
 		for _, v := range vList {
 			req.Header.Add(newKey, v)
 		}
@@ -189,4 +201,13 @@ func isAbsolutePath(uri string) bool {
 
 func isFullURL(uri string) bool {
 	return strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://")
+}
+
+func validBearer(authorizationHeader, authKey string) bool {
+	const bearerPrefix = "Bearer "
+	if !strings.HasPrefix(strings.ToLower(authorizationHeader), strings.ToLower(bearerPrefix)) {
+		return false
+	}
+	token := strings.TrimSpace(authorizationHeader[len(bearerPrefix):])
+	return token == authKey
 }
