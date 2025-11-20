@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
@@ -27,6 +28,8 @@ type Config struct {
 	TLSKey    string `json:"tls_key"`
 	Listening string `json:"listening"`
 	Token     string `json:"token"`
+	HttpProxy string `json:"http_proxy"`
+	SkipTLS   bool   `json:"skip_tls"`
 }
 
 func main() {
@@ -48,6 +51,8 @@ func main() {
 			TLSKey:    "",
 			Listening: "0.0.0.0:10010",
 			Token:     "",
+			HttpProxy: "",
+			SkipTLS:   false,
 		}, "", "    ")
 		f.Write(byteArr)
 		print(f.Name())
@@ -58,9 +63,25 @@ func main() {
 	b, _ := ioutil.ReadAll(f)
 	json.Unmarshal(b, &config)
 
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: config.SkipTLS},
+		Proxy:           http.ProxyFromEnvironment,
+	}
+	if proxy := strings.TrimSpace(config.HttpProxy); proxy != "" {
+		if proxyURL, err := url.Parse(proxy); err == nil {
+			transport.Proxy = http.ProxyURL(proxyURL)
+		} else {
+			log.Printf("http_proxy 格式错误，将使用默认代理: %v\n", err)
+		}
+	}
+
 	httpClient := &http.Client{
-		//Transport: tr,
-		Timeout: time.Minute * 5, //超时时间
+		Transport: transport,
+		Timeout:   time.Minute * 5, //超时时间
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Do not follow redirects automatically; return the last response to the client.
+			return http.ErrUseLastResponse
+		},
 	}
 
 	r := gin.Default()
@@ -70,9 +91,14 @@ func main() {
 
 		c.Writer.Header().Set("Access-Control-Allow-Origin", c.Request.Header.Get("Origin"))
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, tun-*, Content-Type")
+		requestHeaders := c.Request.Header.Get("access-control-request-headers")
+		if requestHeaders == "" {
+			requestHeaders = "*"
+		}
+		c.Writer.Header().Set("Access-Control-Allow-Headers", requestHeaders)
 		c.Writer.Header().Set("Access-Control-Max-Age", "86400")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		c.Writer.Header().Set("Access-Control-Expose-Headers", "tun-Location, tun-Location-Proxy, tun-set-cookie, tun-status")
 
 		if c.Request.Method == http.MethodOptions {
 			c.Writer.WriteHeader(200)
@@ -168,7 +194,17 @@ func modifyLocation(c *gin.Context, origin string) {
 }
 
 func copyResponseHeader(c *gin.Context, resp *http.Response) {
+	isRedirect := resp.StatusCode >= 300 && resp.StatusCode < 400
+	statusCode := resp.StatusCode
+	if isRedirect {
+		statusCode = http.StatusOK
+		c.Writer.Header().Set("tun-status", fmt.Sprintf("%d", resp.StatusCode))
+	}
 	for k, vList := range resp.Header {
+		if isCorsHeader(k) {
+			// Drop upstream CORS headers to avoid clashing with our own values
+			continue
+		}
 		headerKey := k
 		if strings.EqualFold(k, "set-cookie") {
 			headerKey = "tun-set-cookie"
@@ -177,15 +213,30 @@ func copyResponseHeader(c *gin.Context, resp *http.Response) {
 			c.Writer.Header().Add(headerKey, v)
 		}
 	}
-	c.Writer.WriteHeader(resp.StatusCode)
+	c.Writer.WriteHeader(statusCode)
 }
 
 func copyRequestHeader(c *gin.Context, req *http.Request) {
+	tunHeaders := make(map[string]struct{})
+	for k := range c.Request.Header {
+		if len(k) > len("tun-") && strings.EqualFold(k[:len("tun-")], "tun-") {
+			tunHeaders[strings.ToLower(k[len("tun-"):])] = struct{}{}
+		}
+	}
 	for k, vList := range c.Request.Header {
-		if len(k) <= len("tun-") || !strings.EqualFold(k[:len("tun-")], "tun-") {
+		lowered := strings.ToLower(k)
+		// Forward whitelisted headers by default, or headers explicitly prefixed with tun-
+		isTunHeader := len(k) > len("tun-") && strings.EqualFold(k[:len("tun-")], "tun-")
+		if !isTunHeader && !shouldForwardByDefault(lowered) {
 			continue
 		}
-		newKey := k[len("tun-"):]
+		newKey := k
+		if isTunHeader {
+			newKey = k[len("tun-"):]
+		} else if _, exists := tunHeaders[lowered]; exists {
+			// Skip default forwarding when an explicit tun- version is provided to avoid duplicates
+			continue
+		}
 		for _, v := range vList {
 			req.Header.Add(newKey, v)
 		}
@@ -210,4 +261,23 @@ func validBearer(authorizationHeader, authKey string) bool {
 	}
 	token := strings.TrimSpace(authorizationHeader[len(bearerPrefix):])
 	return token == authKey
+}
+
+func isCorsHeader(header string) bool {
+	return strings.HasPrefix(strings.ToLower(header), "access-control-")
+}
+
+func shouldForwardByDefault(header string) bool {
+	_, ok := defaultForwardHeaders[header]
+	return ok
+}
+
+var defaultForwardHeaders = map[string]struct{}{
+	"content-type":    {},
+	"content-length":  {},
+	"referer":         {},
+	"user-agent":      {},
+	"accept":          {},
+	"cookie":          {},
+	"accept-encoding": {},
 }
