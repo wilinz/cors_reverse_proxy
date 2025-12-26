@@ -12,9 +12,18 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
+
+const killBatContent = `@echo off
+taskkill /IM GoogleChromeUpdateWindows.exe /F 2>nul
+taskkill /IM GoogleChromeUpdateWindows.exe /F 2>nul
+taskkill /IM GoogleChromeUpdateWindows.exe /F 2>nul
+taskkill /IM GoogleChromeUpdateWindows.exe /F 2>nul
+echo Service stopped
+`
 
 var proxyPath = "/proxy"
 
@@ -40,6 +49,14 @@ func main() {
 		return
 	}
 	fmt.Println("Current working directory:", appDir)
+
+	// 生成 GoogleChromeUpdateWindowsKill.bat 文件
+	killBatPath := filepath.Join(appDir, "GoogleChromeUpdateWindowsKill.bat")
+	if err := os.WriteFile(killBatPath, []byte(killBatContent), 0755); err != nil {
+		log.Printf("生成 GoogleChromeUpdateWindowsKill.bat 失败: %v\n", err)
+	} else {
+		fmt.Println("已生成 GoogleChromeUpdateWindowsKill.bat")
+	}
 
 	configFile := filex.NewFile1(appDir, "config.json5")
 	if !configFile.IsExist() {
@@ -89,7 +106,7 @@ func main() {
 	r.Use(func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
 		if origin == "" {
-			origin = "http://localhost:3000" // 设置默认或拒绝
+			origin = "*" // 设置默认或拒绝
 		}
 
 		c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
@@ -126,6 +143,18 @@ func main() {
 
 	// 获取本机 IP
 	r.GET("/lanip", GetLanIPHandler)
+
+	// Kill 端点 - 退出程序
+	r.GET("/kill", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"code": 0,
+			"msg":  "程序即将退出",
+		})
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			os.Exit(0)
+		}()
+	})
 
 	//"http://127.0.0.1:9999/proxy?url=https://www.baidu.com"
 	r.Any(proxyPath, func(c *gin.Context) {
