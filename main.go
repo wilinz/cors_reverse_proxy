@@ -86,14 +86,18 @@ func main() {
 
 	r := gin.Default()
 
-	//"http://127.0.0.1:9999/proxy?url=https://www.baidu.com"
-	r.Any(proxyPath, func(c *gin.Context) {
+	r.Use(func(c *gin.Context) {
+		origin := c.Request.Header.Get("Origin")
+		if origin == "" {
+			origin = "http://localhost:3000" // 设置默认或拒绝
+		}
 
-		c.Writer.Header().Set("Access-Control-Allow-Origin", c.Request.Header.Get("Origin"))
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "*")
-		requestHeaders := c.Request.Header.Get("access-control-request-headers")
+		c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS")
+
+		requestHeaders := c.Request.Header.Get("Access-Control-Request-Headers")
 		if requestHeaders == "" {
-			requestHeaders = "*"
+			requestHeaders = "Content-Type, Authorization"
 		}
 		c.Writer.Header().Set("Access-Control-Allow-Headers", requestHeaders)
 		c.Writer.Header().Set("Access-Control-Max-Age", "86400")
@@ -101,19 +105,30 @@ func main() {
 		c.Writer.Header().Set("Access-Control-Expose-Headers", "tun-Location, tun-Location-Proxy, tun-set-cookie, tun-status")
 
 		if c.Request.Method == http.MethodOptions {
-			c.Writer.WriteHeader(200)
+			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
 
-		c.Writer.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, post-check=0, pre-check=0")
+		c.Writer.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 		c.Writer.Header().Set("Pragma", "no-cache")
 		c.Writer.Header().Set("Expires", "0")
 
-		authHeader := c.GetHeader("authorization")
+		authHeader := c.GetHeader("Authorization") // 注意大小写
 		if !validBearer(authHeader, config.Token) {
-			c.String(http.StatusUnauthorized, "未认证，请更新App: bearer 认证失败")
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "未认证，请更新App: bearer 认证失败",
+			})
 			return
 		}
+
+		c.Next()
+	})
+
+	// 获取本机 IP
+	r.GET("/lanip", GetLanIPHandler)
+
+	//"http://127.0.0.1:9999/proxy?url=https://www.baidu.com"
+	r.Any(proxyPath, func(c *gin.Context) {
 
 		urlString := c.Query("url")
 
@@ -280,4 +295,5 @@ var defaultForwardHeaders = map[string]struct{}{
 	"accept":          {},
 	"cookie":          {},
 	"accept-encoding": {},
+	"keep-alive":      {},
 }
