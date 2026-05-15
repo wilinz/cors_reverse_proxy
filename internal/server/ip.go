@@ -3,18 +3,21 @@ package server
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
-
-	"github.com/gin-gonic/gin"
 )
 
-func lanIPHandler(c *gin.Context) {
+func lanIPHandler(w http.ResponseWriter, r *http.Request) {
 	ip, err := getLocalIP()
 	if err != nil {
-		c.JSON(500, gin.H{"code": -1, "msg": err.Error(), "ip": ""})
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"code": -1, "msg": err.Error(), "ip": "",
+		})
 		return
 	}
-	c.JSON(200, gin.H{"code": 0, "msg": "success", "ip": ip})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"code": 0, "msg": "success", "ip": ip,
+	})
 }
 
 // 优先级: 以太网 > WiFi > 其他任意 IPv4（排除 127.0.0.x）

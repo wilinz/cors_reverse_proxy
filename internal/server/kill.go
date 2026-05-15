@@ -8,12 +8,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
-
-	"github.com/gin-gonic/gin"
 )
 
-func killHandler(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"code": 0, "msg": "程序即将退出"})
+func killHandler(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"code": 0, "msg": "程序即将退出"})
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
 		os.Exit(0)

@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"cors_reverse_proxy/internal/config"
 )
 
@@ -38,32 +36,36 @@ func newHTTPClient(cfg config.Config) *http.Client {
 	}
 }
 
-func proxyHandler(client *http.Client) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		urlString := c.Query("url")
+func proxyHandler(client *http.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		urlString := r.URL.Query().Get("url")
 		originURL, err := parseOriginURL(urlString)
 		if err != nil {
-			c.String(http.StatusBadRequest, "url参数错误")
+			http.Error(w, "url参数错误", http.StatusBadRequest)
 			return
 		}
 
-		req, _ := http.NewRequest(c.Request.Method, urlString, c.Request.Body)
-		copyRequestHeaders(c.Request.Header, req.Header)
+		req, err := http.NewRequestWithContext(r.Context(), r.Method, urlString, r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		copyRequestHeaders(r.Header, req.Header)
 
 		resp, err := client.Do(req)
 		if err != nil {
 			log.Println(err)
-			c.String(http.StatusInternalServerError, err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		defer resp.Body.Close()
 
-		status := copyResponseHeaders(resp.Header, c.Writer.Header(), resp.StatusCode)
-		modifyLocation(c, originURL.String())
-		c.Writer.WriteHeader(status)
+		status := copyResponseHeaders(resp.Header, w.Header(), resp.StatusCode)
+		modifyLocation(w.Header(), originURL.String())
+		w.WriteHeader(status)
 
 		buf := make([]byte, 32*1024)
-		_, _ = io.CopyBuffer(c.Writer, resp.Body, buf)
+		_, _ = io.CopyBuffer(w, resp.Body, buf)
 	}
 }
 
@@ -77,8 +79,8 @@ func parseOriginURL(urlString string) (*url.URL, error) {
 	return u, nil
 }
 
-func modifyLocation(c *gin.Context, origin string) {
-	rawLocation := strings.TrimSpace(c.Writer.Header().Get("Location"))
+func modifyLocation(h http.Header, origin string) {
+	rawLocation := strings.TrimSpace(h.Get("Location"))
 	if rawLocation == "" {
 		return
 	}
@@ -95,9 +97,9 @@ func modifyLocation(c *gin.Context, origin string) {
 	default:
 		location = origin + "/" + strings.TrimPrefix(location, "/")
 	}
-	c.Writer.Header().Del("Location")
-	c.Writer.Header().Set("tun-Location", location)
-	c.Writer.Header().Set("tun-Location-Proxy", buildProxyURL(location))
+	h.Del("Location")
+	h.Set("tun-Location", location)
+	h.Set("tun-Location-Proxy", buildProxyURL(location))
 }
 
 func buildProxyURL(uri string) string {
