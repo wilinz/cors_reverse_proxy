@@ -1,4 +1,4 @@
-module mirror_image_proxy
+module cors_reverse_proxy
 
 go 1.24.0
 
@@ -6,7 +6,8 @@ toolchain go1.24.3
 
 require (
 	github.com/gin-gonic/gin v1.11.0
-	github.com/wilinz/go-filex v0.0.0-20230321132739-7a825b3f5691
+	github.com/google/uuid v1.6.0
+	github.com/titanous/json5 v1.0.0
 )
 
 require (

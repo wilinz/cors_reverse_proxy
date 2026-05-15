@@ -1,0 +1,161 @@
+# Optional GitHub Actions Secrets (Settings → Secrets and variables → Actions):
+#
+# DEFAULT_TOKEN      - Bearer auth token baked into the binary at compile time
+#                      (optional; if unset, a random UUID is generated at runtime)
+# DEFAULT_LISTENING  - Default listen address, e.g. 0.0.0.0:10010
+# DEFAULT_HTTP_PROXY - Upstream HTTP proxy, e.g. http://127.0.0.1:9000
+# DEFAULT_SKIP_TLS   - Skip upstream TLS verification: "true" or "false"
+
+name: Build Releases
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: cors_reverse_proxy
+  PKG: ./cmd/cors_reverse_proxy
+  CFG_PKG: cors_reverse_proxy/internal/config
+  GO_LEGACY_VERSION: 1.24.6-1
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset_name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS (modern Go covers Apple Silicon + Intel)
+          - { os: macos-latest,  goos: darwin,  goarch: arm64, ext: '',     ldflags_extra: '', asset_name: cors_reverse_proxy-macos-arm64,    win7: false }
+          - { os: macos-latest,  goos: darwin,  goarch: amd64, ext: '',     ldflags_extra: '', asset_name: cors_reverse_proxy-macos-x64,      win7: false }
+
+          # Linux
+          - { os: ubuntu-latest, goos: linux,   goarch: amd64, ext: '',     ldflags_extra: '', asset_name: cors_reverse_proxy-linux-x64,      win7: false }
+          - { os: ubuntu-latest, goos: linux,   goarch: arm64, ext: '',     ldflags_extra: '', asset_name: cors_reverse_proxy-linux-arm64,    win7: false }
+          - { os: ubuntu-latest, goos: linux,   goarch: arm,   ext: '',     ldflags_extra: '', asset_name: cors_reverse_proxy-linux-armv7,    win7: false, goarm: '7' }
+
+          # Windows 10+ (modern Go)
+          - { os: ubuntu-latest, goos: windows, goarch: amd64, ext: '.exe', ldflags_extra: '', asset_name: cors_reverse_proxy-windows-x64.exe, win7: false }
+
+          # Windows 7 (go-legacy-win7 toolchain)
+          - { os: ubuntu-latest, goos: windows, goarch: amd64, ext: '.exe', ldflags_extra: '',                asset_name: cors_reverse_proxy-windows-x64-win7.exe,     win7: true }
+          - { os: ubuntu-latest, goos: windows, goarch: amd64, ext: '.exe', ldflags_extra: '-H windowsgui',   asset_name: cors_reverse_proxy-windows-x64-win7-gui.exe, win7: true }
+          - { os: ubuntu-latest, goos: windows, goarch: '386', ext: '.exe', ldflags_extra: '',                asset_name: cors_reverse_proxy-windows-x86-win7.exe,     win7: true }
+          - { os: ubuntu-latest, goos: windows, goarch: '386', ext: '.exe', ldflags_extra: '-H windowsgui',   asset_name: cors_reverse_proxy-windows-x86-win7-gui.exe, win7: true }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        if: ${{ !matrix.win7 }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Cache Go modules (Win7 toolchain)
+        if: ${{ matrix.win7 }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/go-legacy-cache
+            /tmp/go-legacy-modcache
+          key: ${{ runner.os }}-go-legacy-${{ env.GO_LEGACY_VERSION }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-legacy-${{ env.GO_LEGACY_VERSION }}-
+
+      - name: Cache go-legacy-win7 toolchain
+        if: ${{ matrix.win7 }}
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/go-legacy-win7-1.24
+          key: go-legacy-win7-${{ env.GO_LEGACY_VERSION }}-linux-amd64
+
+      - name: Install go-legacy-win7
+        if: ${{ matrix.win7 && steps.cache-toolchain.outputs.cache-hit != 'true' }}
+        run: |
+          set -e
+          FILE="go-legacy-win7-${GO_LEGACY_VERSION}.linux_amd64.tar.gz"
+          URL="https://github.com/thongtech/go-legacy-win7/releases/download/v${GO_LEGACY_VERSION}/${FILE}"
+          TMP=$(mktemp -d)
+          curl -L -o "$TMP/$FILE" "$URL"
+          mkdir -p "$TMP/extract"
+          tar -xzf "$TMP/$FILE" -C "$TMP/extract"
+          mv "$TMP/extract/go-legacy-win7" "$HOME/go-legacy-win7-1.24"
+          "$HOME/go-legacy-win7-1.24/bin/go" version
+
+      - name: Build (modern Go)
+        if: ${{ !matrix.win7 }}
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          DEFAULT_TOKEN: ${{ secrets.DEFAULT_TOKEN }}
+          DEFAULT_LISTENING: ${{ secrets.DEFAULT_LISTENING }}
+          DEFAULT_HTTP_PROXY: ${{ secrets.DEFAULT_HTTP_PROXY }}
+          DEFAULT_SKIP_TLS: ${{ secrets.DEFAULT_SKIP_TLS }}
+        run: |
+          set -e
+          LDFLAGS="-s -w ${{ matrix.ldflags_extra }}"
+          [ -n "$DEFAULT_TOKEN" ]      && LDFLAGS="$LDFLAGS -X '${CFG_PKG}.DefaultToken=${DEFAULT_TOKEN}'"
+          [ -n "$DEFAULT_LISTENING" ]  && LDFLAGS="$LDFLAGS -X '${CFG_PKG}.DefaultListening=${DEFAULT_LISTENING}'"
+          [ -n "$DEFAULT_HTTP_PROXY" ] && LDFLAGS="$LDFLAGS -X '${CFG_PKG}.DefaultHttpProxy=${DEFAULT_HTTP_PROXY}'"
+          [ -n "$DEFAULT_SKIP_TLS" ]   && LDFLAGS="$LDFLAGS -X '${CFG_PKG}.DefaultSkipTLS=${DEFAULT_SKIP_TLS}'"
+          mkdir -p artifacts
+          go build -ldflags "$LDFLAGS" -o "artifacts/${{ matrix.asset_name }}" "$PKG"
+
+      - name: Build (go-legacy-win7)
+        if: ${{ matrix.win7 }}
+        env:
+          GOROOT: /home/runner/go-legacy-win7-1.24
+          GOCACHE: /tmp/go-legacy-cache
+          GOMODCACHE: /tmp/go-legacy-modcache
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          DEFAULT_TOKEN: ${{ secrets.DEFAULT_TOKEN }}
+          DEFAULT_LISTENING: ${{ secrets.DEFAULT_LISTENING }}
+          DEFAULT_HTTP_PROXY: ${{ secrets.DEFAULT_HTTP_PROXY }}
+          DEFAULT_SKIP_TLS: ${{ secrets.DEFAULT_SKIP_TLS }}
+        run: |
+          set -e
+          export PATH="$GOROOT/bin:$PATH"
+          go version
+          LDFLAGS="-s -w ${{ matrix.ldflags_extra }}"
+          [ -n "$DEFAULT_TOKEN" ]      && LDFLAGS="$LDFLAGS -X '${CFG_PKG}.DefaultToken=${DEFAULT_TOKEN}'"
+          [ -n "$DEFAULT_LISTENING" ]  && LDFLAGS="$LDFLAGS -X '${CFG_PKG}.DefaultListening=${DEFAULT_LISTENING}'"
+          [ -n "$DEFAULT_HTTP_PROXY" ] && LDFLAGS="$LDFLAGS -X '${CFG_PKG}.DefaultHttpProxy=${DEFAULT_HTTP_PROXY}'"
+          [ -n "$DEFAULT_SKIP_TLS" ]   && LDFLAGS="$LDFLAGS -X '${CFG_PKG}.DefaultSkipTLS=${DEFAULT_SKIP_TLS}'"
+          mkdir -p artifacts
+          go build -ldflags "$LDFLAGS" -o "artifacts/${{ matrix.asset_name }}" "$PKG"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: artifacts/${{ matrix.asset_name }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,6 @@
+{
+    "listening": "0.0.0.0:10010",
+    "token": "bc3232db-a038-4058-8460-74a2d7fba5a1",
+//    "http_proxy": "http://127.0.0.1:9000",
+    "skip_tls": true
+}
